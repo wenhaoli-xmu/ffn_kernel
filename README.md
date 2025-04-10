@@ -13,9 +13,7 @@ pip install .
 # Quick Start
 
 ```python
-from ffn_kernel_bf16 import ffn
-from ffn_kernel_fp32 import ffn_fp32
-from ffn_kernel_fp16 import ffn_fp16
+from ffn_kernel import ffn_fp16, ffn_bf16, ffn_fp32
 
 
 class TorchFFN(nn.Module):
