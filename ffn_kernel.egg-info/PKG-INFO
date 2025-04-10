@@ -1,5 +1,0 @@
-Metadata-Version: 2.4
-Name: ffn_kernel
-Version: 1.0
-Requires-Dist: triton==3.2.0
-Dynamic: requires-dist
