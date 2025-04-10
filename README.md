@@ -1,7 +1,7 @@
 # Quick Start
 
 ```bash
-pip install triton==3.1.0
+pip install triton==3.2.0
 ```
 
 ```python
