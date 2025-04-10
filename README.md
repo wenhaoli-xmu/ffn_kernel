@@ -8,6 +8,42 @@ pip install .
 
 # Quick Start
 
+## Linear
+
+```python
+from ffn_kernel import linear_bf16, linear_fp32
+
+
+class TorchLinear(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+        self.linear_v = nn.Linear(in_dim, out_dim, bias=False)
+        self.linear_t = nn.Linear(in_dim, out_dim, bias=False)
+
+    @torch.no_grad()
+    def forward(self, x, visual_mask):
+        visual_mask = visual_mask[:, :, None]
+        return self.linear_v(x) * visual_mask + self.linear_t(x) * (~visual_mask)
+
+
+class TritonLinear(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+        self.linear_v = nn.Linear(in_dim, out_dim, bias=False)
+        self.linear_t = nn.Linear(in_dim, out_dim, bias=False)
+
+    def forward(self, x, visual_mask):
+        batch_size = x.shape[0]
+        return (linear_bf16 if x.dtype == torch.bfloat16 else linear_fp32)(
+            x.flatten(0,1),
+            self.linear_v.weight.data.T,
+            self.linear_t.weight.data.T,
+            visual_mask.flatten(),
+        ).unflatten(0, (batch_size, -1))
+```
+
+## FFN
+
 ```python
 from ffn_kernel import ffn_fp16, ffn_bf16, ffn_fp32
 
@@ -80,6 +116,7 @@ class TritonFFN(nn.Module):
 git clone https://github.com/wenhaoli-xmu/lm-profiler
 cd lm-profiler
 pip isntall -e .
+pip isntall IPython
 ```
 
 ```bash
