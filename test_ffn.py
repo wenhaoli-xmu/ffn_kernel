@@ -3,8 +3,7 @@ import torch.nn as nn
 from profiler import WallTime
 from random import randint
 import random
-from ffn_kernel_bf16 import ffn
-from ffn_kernel_fp32 import ffn_fp32
+from ffn_kernel import ffn_bf16, ffn_fp32
 import IPython
 random.seed(0)
 torch.random.manual_seed(0)
@@ -65,7 +64,7 @@ class Triton(nn.Module):
     @torch.no_grad()
     def forward(self, x, mask):
         batch_size = x.shape[0]
-        return (ffn_fp32 if self.fp32_kernel else ffn)(
+        return (ffn_fp32 if self.fp32_kernel else ffn_bf16)(
             x.flatten(0,1),
             self.w1.weight.data.T,
             self.w2.weight.data.T,

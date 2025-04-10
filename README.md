@@ -1,8 +1,16 @@
-# Quick Start
+# Installation
 
 ```bash
-pip install triton==3.2.0
+git clone https://github.com/wenhaoli-xmu/lm-profiler
+cd lm-profiler
+pip isntall -e .
+
+# clone this repo
+cd not-important
+pip install .
 ```
+
+# Quick Start
 
 ```python
 from ffn_kernel_bf16 import ffn
