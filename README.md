@@ -1,5 +1,9 @@
 # Quick Start
 
+```bash
+pip install triton==3.1.0
+```
+
 ```python
 from ffn_kernel_bf16 import ffn
 from ffn_kernel_fp32 import ffn_fp32
