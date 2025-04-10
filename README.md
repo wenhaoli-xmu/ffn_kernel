@@ -1,11 +1,7 @@
 # Installation
 
 ```bash
-git clone https://github.com/wenhaoli-xmu/lm-profiler
-cd lm-profiler
-pip isntall -e .
-
-# clone this repo
+git clone https://github.com/wenhaoli-xmu/not-important
 cd not-important
 pip install .
 ```
