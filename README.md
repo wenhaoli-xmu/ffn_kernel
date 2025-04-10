@@ -74,6 +74,13 @@ class TritonFFN(nn.Module):
 # Precision Check
 
 ```bash
+# download profiling tools
+git clone https://github.com/wenhaoli-xmu/lm-profiler
+cd lm-profiler
+pip isntall -e .
+```
+
+```bash
 # check float32 kernel
 python test_ffn.py --check --fp32 --bsz 1
 
