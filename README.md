@@ -6,35 +6,34 @@ cd not-important
 pip install .
 ```
 
-# Quick Start
+# (Optional) Search Kernel Configs
 
-## Search Optimal Kernel Configs (Optional)
-
-The default kernel config is searched under A100 80G
+The default kernel config is searched under A800 80G
 If you want to find the configs that runs the fastest on your machine, follow these steps:
 
 1. Run latency benchmarks to get the optimal configs:
 
     ```bash
-    python find_spec/find_fwd.py
-    python find_spec/find_bwd_da.py
-    python find_spec/find_bwd_db.py
+    git clone https://wenhaoli-xmu/lm-profiler.git
+    cd lm-profiler && pip install -e .
+    cd ..
+
+    python find_spec/bf16_linear_fwd.py
+    python find_spec/bf16_linear_bwd.py
     ```
     
 2. Apply the optimal configs:
-    Assume the optimal config for the forward kernel is `(16,16,128,1)`
-    First, locate to `ffn_kernel->linear.py->_bf16_linear_forward`, then change the corresponding constant:
-    ```python
-    BLOCK_SIZE_M=16
-    BLOCK_SIZE_N=16
-    BLOCK_SIZE_K=128
-    GROUP_SIZE_M=1
+    ```bash
+    mv bf16_linear_fwd.json ffn_kernel/
+    mv bf16_linear_bwd.json ffn_kernel/
     ```
+
+# Quick Start
 
 ## Linear
 
 ```python
-from ffn_kernel import linear_bf16, linear_fp32
+from ffn_kernel import MaskedLinear
 
 
 class TorchLinear(nn.Module):
@@ -43,7 +42,6 @@ class TorchLinear(nn.Module):
         self.linear_v = nn.Linear(in_dim, out_dim, bias=False)
         self.linear_t = nn.Linear(in_dim, out_dim, bias=False)
 
-    @torch.no_grad()
     def forward(self, x, visual_mask):
         visual_mask = visual_mask[:, :, None]
         return self.linear_v(x) * visual_mask + self.linear_t(x) * (~visual_mask)
@@ -57,7 +55,7 @@ class TritonLinear(nn.Module):
 
     def forward(self, x, visual_mask):
         batch_size = x.shape[0]
-        return (linear_bf16 if x.dtype == torch.bfloat16 else linear_fp32)(
+        MaskedLinear.apply(
             x.flatten(0,1),
             self.linear_v.weight.data.T,
             self.linear_t.weight.data.T,
@@ -65,7 +63,7 @@ class TritonLinear(nn.Module):
         ).unflatten(0, (batch_size, -1))
 ```
 
-## FFN
+<!-- ## FFN
 
 ```python
 from ffn_kernel import ffn_fp16, ffn_bf16, ffn_fp32
@@ -129,10 +127,35 @@ class TritonFFN(nn.Module):
             self.u3.weight.data.T,
             mask.flatten(0,1)
         ).unflatten(0, (batch_size, -1))
-```
+``` -->
+
+# Implementing Details
+
+Forward prop formula:
+
+$$
+C=T_1\odot T_2= (xW_1)\sigma(xW_1) \cdot xW_3
+$$
+
+Backward prop formula:
+
+$$
+\begin{align}
+\text{d}W_3&=x^\top{\color{blue}(G\odot T_1)}, \quad (k,m),(m,n)\\
+\text{d}W_1&= x^\top {\color{blue}\left[G\odot T_2\odot (U+T_1-T_1U)\right]}, \quad (k,m),(m,n) \\
+\text{d}x&=\left[\color{blue}G\odot T_2\odot (U+T_1-U T_1)\right]W_1^T+{\color{blue}(G\odot T_1)}W_3^\top, (m,n),(n,k)
+\end{align} 
+$$
+
+Strategy:
+
+1. Calculate blue part using elem-wise kernel. 
+2. Launch fused kernel to calculate final results.
 
 
-# Precision Check
+
+
+<!-- # Precision Check
 
 ```bash
 # download profiling tools
@@ -148,4 +171,4 @@ python test_ffn.py --check --fp32 --bsz 1
 
 # check bfloat16 kernel
 python test_ffn.py --check --bsz 1
-```
+``` -->

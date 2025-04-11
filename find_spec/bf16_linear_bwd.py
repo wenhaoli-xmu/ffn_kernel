@@ -1,5 +1,5 @@
 import torch
-from ffn_kernel.linear import _masked_matmul_bwd_db
+from ffn_kernel.linear import _fused_bwd_kernel
 import triton
 import random
 from random import randint
@@ -9,25 +9,42 @@ random.seed(0)
 torch.cuda.manual_seed(0)
 
 
-def _bf16_linear_bwd_db(grad, a, b1, b2, mask, blk_m, blk_n, blk_k, grp_k, num_warps, num_stages):
+def _bf16_linear_backward(gd, a, b1, b2, mask, da_m, da_k, da_n, db_m, db_k, db_n, da_group, db_group, num_warps, num_stages):
     M, K = a.shape
     _, N = b1.shape
+
+    grid = (
+        triton.cdiv(M, da_m) *
+        triton.cdiv(K, da_k) +
+        triton.cdiv(K, db_k) * 
+        triton.cdiv(N, db_n),
+    )
+
+    da, db1, db2 = torch.empty_like(a), torch.empty_like(b1), torch.empty_like(b2)
     a = a.t().contiguous()
-    grid = lambda META: (triton.cdiv(K, META['BLOCK_SIZE_K']) * triton.cdiv(N, META['BLOCK_SIZE_N']), )
-    db1, db2 = torch.empty_like(b1), torch.empty_like(b2)
-    _masked_matmul_bwd_db[grid](
-        grad, a, db1, db2, mask,
+    b1 = b1.t().contiguous()
+    b2 = b2.t().contiguous()
+
+    _fused_bwd_kernel[grid](
+        gd, a, b1, b2, da, db1, db2, mask,
         M, N, K,
+        gd.stride(0), gd.stride(1),
         a.stride(0), a.stride(1),
-        grad.stride(0), grad.stride(1),
+        b1.stride(0), b1.stride(1),
+        da.stride(0), da.stride(1),
         db1.stride(0), db1.stride(1),
-        BLOCK_SIZE_M=blk_m,
-        BLOCK_SIZE_N=blk_n,
-        BLOCK_SIZE_K=blk_k,
-        GROUP_SIZE_K=grp_k,
+        DA_BLOCK_SIZE_M=da_m,
+        DA_BLOCK_SIZE_K=da_k,
+        DA_BLOCK_SIZE_N=da_n,
+        DB_BLOCK_SIZE_M=db_m,
+        DB_BLOCK_SIZE_K=db_k,
+        DB_BLOCK_SIZE_N=db_n,
+        DA_GROUP_SIZE=da_group,
+        DB_GROUP_SIZE=db_group,
         num_warps=num_warps,
         num_stages=num_stages)
-    return db1, db2
+
+    return da, db1, db2
 
 
 def generate_mask(batch_size, seq_len, image_size):
@@ -42,16 +59,20 @@ def generate_mask(batch_size, seq_len, image_size):
 class Search(BaseSearch):
     def get_configs(self):
         return {
-            "blk_m": [32,64,128],
-            "blk_n": [32,64,128],
-            "blk_k": [32,64,128],
-            "grp_m": [1,2,4,8,16],
-            "warps": [4],
-            "stages": [4]
+            "da_m": [16,32,64,128],
+            "da_k": [16,32,64,128],
+            "da_n": [16,32,64,128],
+            "db_m": [16,32,64,128],
+            "db_k": [16,32,64,128],
+            "db_n": [16,32,64,128],
+            "da_group": [2,4,8],
+            "db_group": [2,4,8],
+            "num_warps": [4],
+            "num_stages": [4]
         }
     
-    def benchmark_object(self, inputs):
-        return _bf16_linear_bwd_db(*inputs)
+    def benchmark_object(self, *inputs):
+        return _bf16_linear_backward(*inputs)
 
 
 if __name__ == '__main__':
@@ -81,5 +102,5 @@ if __name__ == '__main__':
         configs.update({s: cfg})
     
     file = json.dumps(configs, indent=4)
-    with open(f"bf16_linear_bwd_db.json", 'w') as f:
+    with open(f"bf16_linear_bwd.json", 'w') as f:
         f.write(file)

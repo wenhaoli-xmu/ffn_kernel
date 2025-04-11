@@ -4,6 +4,9 @@ from pygments.console import colorize
 
 
 class BaseSearch:
+    timeout = 0.1
+    bad_configs = set()
+
     def __init__(self, inputs):
         self.inputs = inputs
 
@@ -14,7 +17,7 @@ class BaseSearch:
     @abstractmethod
     def benchmark_object(self, *args):
         ...
-    
+
     def search(self):
         stack = [(0,) * len(self.get_configs())]
         visited = {}
@@ -23,30 +26,37 @@ class BaseSearch:
 
         while len(stack) > 0:
             c = stack.pop()
-            if c not in visited:
+            if (c not in visited) and (c not in self.bad_configs):
                 config_args = []
                 for idx, v in zip(c, self.get_configs().values()):
                     config_args.append(v[idx])
                 config_args = tuple(config_args)
                 c_to_config[c] = config_args
 
+                inputs = self.inputs + config_args
+
                 wt = WallTime(name=f'{c}', cuda=0)
                 for _ in range(3):
                     with wt:
-                        self.benchmark_object(self.inputs + config_args)
+                        self.benchmark_object(*inputs)
+                    if min(wt.time) > self.timeout:
+                        self.bad_configs.add(c)
+                        break
+
                 visited.update({c: min(wt.time)})
+                print(c_to_config[c], min(wt.time))
 
                 for i in range(len(c)):
                     _c = list(c)
                     if _c[i] - 1 >= 0:
                         _c[i] -= 1
-                    if tuple(_c) not in visited:
+                    if (tuple(_c) not in visited) and (tuple(_c) not in self.bad_configs):
                         stack.append(tuple(_c))
 
                     _c = list(c)
                     if _c[i] + 1 < length[i]:
                         _c[i] += 1
-                    if tuple(_c) not in visited:
+                    if (tuple(_c) not in visited) and (tuple(_c) not in self.bad_configs):
                         stack.append(tuple(_c))
 
         min_key = None

@@ -8,11 +8,68 @@ from .utils import find_spec
 with open(os.path.join(os.path.dirname(__file__), 'bf16_linear_fwd.json')) as f:
     fwd_config = list(json.load(f).values())
 
-with open(os.path.join(os.path.dirname(__file__), 'bf16_linear_bwd_da.json')) as f:
-    bwd_da_config = list(json.load(f).values())
-    
-with open(os.path.join(os.path.dirname(__file__), 'bf16_linear_bwd_db.json')) as f:
-    bwd_db_config = list(json.load(f).values())
+with open(os.path.join(os.path.dirname(__file__), 'bf16_linear_bwd.json')) as f:
+    bwd_config = list(json.load(f).values())
+
+
+@triton.jit
+def _fused_bwd_kernel(
+    g_ptr, a_ptr, b1_ptr, b2_ptr, da_ptr, db1_ptr, db2_ptr, mask_ptr,
+    M, K, N,
+    stride_gm, stride_gn,
+    stride_ak, stride_am,
+    stride_bn, stride_bk,
+    stride_dam, stride_dak,
+    stride_dbk, stride_dbn,
+    DA_BLOCK_SIZE_M: tl.constexpr,
+    DA_BLOCK_SIZE_K: tl.constexpr,
+    DA_BLOCK_SIZE_N: tl.constexpr,
+    DB_BLOCK_SIZE_M: tl.constexpr,
+    DB_BLOCK_SIZE_K: tl.constexpr,
+    DB_BLOCK_SIZE_N: tl.constexpr,
+    DA_GROUP_SIZE: tl.constexpr,
+    DB_GROUP_SIZE: tl.constexpr,
+):
+    """
+    Intro
+    -----
+    Fused kernel for computing da and db simutanously.
+    """
+    pid = tl.program_id(axis=0)
+    if pid < M * K:
+        _masked_matmul_bwd_da(
+            pid, 
+            g_ptr,
+            b1_ptr,
+            b2_ptr,
+            da_ptr,
+            mask_ptr,
+            M, N, K,
+            stride_gm, stride_gn,
+            stride_bn, stride_bk,
+            stride_dam, stride_dak,
+            DA_BLOCK_SIZE_M,
+            DA_BLOCK_SIZE_N,
+            DA_BLOCK_SIZE_K,
+            DA_GROUP_SIZE)
+    else:
+        pid -= M * K
+        _masked_matmul_bwd_db(
+            pid,
+            g_ptr,
+            a_ptr,
+            db1_ptr,
+            db2_ptr,
+            mask_ptr,
+            M, N, K,
+            stride_ak, stride_am,
+            stride_gm, stride_gn,
+            stride_dbk, stride_dbn,
+            DB_BLOCK_SIZE_M,
+            DB_BLOCK_SIZE_N,
+            DB_BLOCK_SIZE_K,
+            DB_GROUP_SIZE)
+
 
 
 @triton.jit
@@ -28,6 +85,12 @@ def _masked_matmul_infer(
         BLOCK_SIZE_K: tl.constexpr,
         GROUP_SIZE_M: tl.constexpr
 ):
+    """
+    Intro
+    -----
+    Forward propagation in inference mode
+    This method is different with `_masked_matmul_forward`, replacing tf32 matmul to fp16 to speed up.
+    """
     pid = tl.program_id(axis=0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
@@ -177,6 +240,7 @@ def _masked_matmul_fwd(
 
 @triton.jit
 def _masked_matmul_bwd_da(
+        thread_idx,
         g_ptr, b1_ptr, b2_ptr, da_ptr, mask_ptr,
         M, N, K,
         stride_gm, stride_gn,
@@ -187,7 +251,12 @@ def _masked_matmul_bwd_da(
         BLOCK_SIZE_K: tl.constexpr,
         GROUP_SIZE_M: tl.constexpr
 ):
-    pid = tl.program_id(axis=0)
+    """
+    Intro
+    -----
+    Backward gradient toward activation.
+    """
+    pid = thread_idx
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_k = tl.cdiv(K, BLOCK_SIZE_K)
     num_pid_in_group = GROUP_SIZE_M * num_pid_k
@@ -256,6 +325,7 @@ def _masked_matmul_bwd_da(
 
 @triton.jit
 def _masked_matmul_bwd_db(
+        thread_idx,
         g_ptr, a_ptr, db1_ptr, db2_ptr, mask_ptr,
         M, N, K,
         stride_ak, stride_am,
@@ -266,7 +336,12 @@ def _masked_matmul_bwd_db(
         BLOCK_SIZE_K: tl.constexpr,
         GROUP_SIZE_K: tl.constexpr
 ):
-    pid = tl.program_id(axis=0)
+    """
+    Intro
+    -----
+    Backward gradient toward model weights.
+    """
+    pid = thread_idx
     num_pid_k = tl.cdiv(K, BLOCK_SIZE_K)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     num_pid_in_group = GROUP_SIZE_K * num_pid_n
@@ -315,10 +390,6 @@ def _masked_matmul_bwd_db(
             accum_db2 = tl.dot(a, g, accum_db2)
 
         else:
-            g1 = tl.where(mask_val[:, None], g, 0.0)
-            g2 = tl.where(~mask_val[:, None], g, 0.0)
-            accum_db1 = tl.dot(a, g1, accum_db1)
-            accum_db2 = tl.dot(a, g2, accum_db2)
             a1 = tl.where(mask_val[None, :], a, 0.0)
             a2 = tl.where(~mask_val[None, :], a, 0.0)
             accum_db1 = tl.dot(a1, g, accum_db1)
@@ -337,58 +408,25 @@ def _masked_matmul_bwd_db(
     tl.store(db2_ptrs, accum_db2.to(tl.bfloat16), mask=db_mask)
 
 
-def _bf16_linear_bwd_db(grad, a, b1, b2, mask):
-    M, K = a.shape
-    _, N = b1.shape
-    a = a.t().contiguous()
-    grid = lambda META: (triton.cdiv(K, META['BLOCK_SIZE_K']) * triton.cdiv(N, META['BLOCK_SIZE_N']), )
-    db1, db2 = torch.empty_like(b1), torch.empty_like(b2)
-    cfg = find_spec(fwd_config, M)
-    _masked_matmul_bwd_db[grid](
-        grad, a, db1, db2, mask,
-        M, N, K,
-        a.stride(0), a.stride(1),
-        grad.stride(0), grad.stride(1),
-        db1.stride(0), db1.stride(1),
-        cfg[0],
-        cfg[1],
-        cfg[2],
-        cfg[3],
-        num_warps=cfg[4],
-        num_stages=cfg[5])
-    return db1, db2
-
-
-def _bf16_linear_bwd_da(grad, a, b1, b2, mask):
-    M, K = a.shape
-    _, N = b1.shape
-    assert isinstance(b1, torch.Tensor)
-    b1 = b1.t().contiguous()
-    b2 = b2.t().contiguous()
-    grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(K, META['BLOCK_SIZE_K']), )
-    da = torch.empty_like(a)
-    cfg = find_spec(fwd_config, M)
-    _masked_matmul_bwd_da[grid](
-        grad, b1, b2, da, mask,
-        M, N, K,
-        grad.stride(0), grad.stride(1),
-        b1.stride(0), b1.stride(1),
-        da.stride(0), da.stride(1),
-        cfg[0],
-        cfg[1],
-        cfg[2],
-        cfg[3],
-        num_warps=cfg[4],
-        num_stages=cfg[5])
-    return da
-
-
 def _bf16_linear_forward(a, b1, b2, mask):
+    """
+    Intro
+    -----
+    Forward kernel launcher.
+    Automatically choose tf32/fp16 computation according to enable gradient flag.
+    """
     M, K = a.shape
     _, N = b1.shape
-    grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), )
+    
+    cfg = find_spec(fwd_config, M // 1024)
+    blk_m, blk_n, blk_k, group_m, num_warps, num_stages = cfg
+
+    grid = (
+        triton.cdiv(M, blk_m) *
+        triton.cdiv(N, blk_n),)
+
     c = torch.empty((M, N), device=a.device, dtype=torch.bfloat16)
-    cfg = find_spec(fwd_config, M)
+
     (_masked_matmul_fwd if torch.is_grad_enabled() else _masked_matmul_infer)[grid](
         a, b1, b2, c, mask,
         M, N, K,
@@ -396,20 +434,57 @@ def _bf16_linear_forward(a, b1, b2, mask):
         b1.stride(0), b1.stride(1),
         b2.stride(0), b2.stride(1),
         c.stride(0), c.stride(1),
-        cfg[0],
-        cfg[1],
-        cfg[2],
-        cfg[3],
-        num_warps=cfg[4],
-        num_stages=cfg[5])
+        BLOCK_SIZE_M=blk_m,
+        BLOCK_SIZE_N=blk_n,
+        BLOCK_SIZE_K=blk_k,
+        GROUP_SIZE_M=group_m,
+        num_warps=num_warps,
+        num_stages=num_stages)
+
     return c
 
 
 def _bf16_linear_backward(gd, a, b1, b2, mask):
-    gd = gd.contiguous()
-    a = a.contiguous()
-    b1 = b1.contiguous()
-    b2 = b2.contiguous()
-    da = _bf16_linear_bwd_da(gd, a, b1, b2, mask)
-    db1, db2 = _bf16_linear_bwd_db(gd, a, b1, b2, mask)
+    """
+    Intro
+    -----
+    Backward kernel launcher.
+    """
+    M, K = a.shape
+    _, N = b1.shape
+
+    cfg = find_spec(bwd_config, M // 1024)
+    da_m, da_k, da_n, db_m, db_k, db_n, da_group, db_group, num_warps, num_stages = cfg
+
+    grid = (
+        triton.cdiv(M, da_m) *
+        triton.cdiv(K, da_k) +
+        triton.cdiv(K, db_k) * 
+        triton.cdiv(N, db_n)
+    )
+
+    da, db1, db2 = torch.empty_like(a), torch.empty_like(b1), torch.empty_like(b2)
+    a = a.t().contiguous()
+    b1 = b1.t().contiguous()
+    b2 = b2.t().contiguous()
+
+    _fused_bwd_kernel[grid](
+        gd, a, b1, b2, da, db1, db2, mask,
+        M, N, K,
+        gd.stride(0), gd.stride(1),
+        a.stride(0), a.stride(1),
+        b1.stride(0), b1.stride(1),
+        da.stride(0), da.stride(1),
+        db1.stride(0), db1.stride(1),
+        DA_BLOCK_SIZE_M=da_m,
+        DA_BLOCK_SIZE_K=da_k,
+        DA_BLOCK_SIZE_N=da_n,
+        DB_BLOCK_SIZE_M=db_m,
+        DB_BLOCK_SIZE_K=db_k,
+        DB_BLOCK_SIZE_N=db_n,
+        DA_GROUP_SIZE=da_group,
+        DB_GROUP_SIZE=db_group,
+        num_warps=num_warps,
+        num_stages=num_stages)
+
     return da, db1, db2

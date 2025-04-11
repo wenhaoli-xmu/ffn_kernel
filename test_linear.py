@@ -126,7 +126,7 @@ if __name__ == "__main__":
             inputs = (x, mask)
             with nullcontext() if args.bwd else torch.no_grad():
                 profile_module(f"pytorch-{seq_len}", pytorch_module, inputs, args.bwd)
-                profile_module(f"triton-{seq_len}", triton_module, inputs, args.bwd)
+                # profile_module(f"triton-{seq_len}", triton_module, inputs, args.bwd)
 
 
         print("="*10)
