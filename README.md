@@ -8,6 +8,29 @@ pip install .
 
 # Quick Start
 
+## Search Optimal Kernel Configs (Optional)
+
+The default kernel config is searched under A100 80G
+If you want to find the configs that runs the fastest on your machine, follow these steps:
+
+1. Run latency benchmarks to get the optimal configs:
+
+    ```bash
+    python find_spec/find_fwd.py
+    python find_spec/find_bwd_da.py
+    python find_spec/find_bwd_db.py
+    ```
+    
+2. Apply the optimal configs:
+    Assume the optimal config for the forward kernel is `(16,16,128,1)`
+    First, locate to `ffn_kernel->linear.py->_bf16_linear_forward`, then change the corresponding constant:
+    ```python
+    BLOCK_SIZE_M=16
+    BLOCK_SIZE_N=16
+    BLOCK_SIZE_K=128
+    GROUP_SIZE_M=1
+    ```
+
 ## Linear
 
 ```python

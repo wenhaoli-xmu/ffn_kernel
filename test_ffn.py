@@ -35,7 +35,6 @@ class Torch(nn.Module):
         self.w1 = nn.Linear(hidden_size, intermediate_size, bias=False)
         self.w2 = nn.Linear(intermediate_size, hidden_size, bias=False)
         self.w3 = nn.Linear(hidden_size, intermediate_size, bias=False)
-
         self.u1 = nn.Linear(hidden_size, intermediate_size, bias=False)
         self.u2 = nn.Linear(intermediate_size, hidden_size, bias=False)
         self.u3 = nn.Linear(hidden_size, intermediate_size, bias=False)
@@ -54,7 +53,6 @@ class Triton(nn.Module):
         self.w1 = nn.Linear(hidden_size, intermediate_size, bias=False)
         self.w2 = nn.Linear(intermediate_size, hidden_size, bias=False)
         self.w3 = nn.Linear(hidden_size, intermediate_size, bias=False)
-
         self.u1 = nn.Linear(hidden_size, intermediate_size, bias=False)
         self.u2 = nn.Linear(intermediate_size, hidden_size, bias=False)
         self.u3 = nn.Linear(hidden_size, intermediate_size, bias=False)
