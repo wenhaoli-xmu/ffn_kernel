@@ -134,16 +134,16 @@ class TritonFFN(nn.Module):
 Forward prop formula of FFN:
 
 $$
-C=T_1\odot T_2= (xW_1)\sigma(xW_1) \cdot xW_3
+C=T_1\sigma(T_1)\odot T_2= (xW_1)\sigma(xW_1) \odot \left(xW_3\right)
 $$
 
 Backward prop formula of FFN:
 
 $$
 \begin{align}
-\text{d}W_3&=x^\top{\color{blue}(G\odot T_1)}, \quad (k,m),(m,n)\\
-\text{d}W_1&= x^\top {\color{blue}\left[G\odot T_2\odot (U+T_1-T_1U)\right]}, \quad (k,m),(m,n) \\
-\text{d}x&=\left[\color{blue}G\odot T_2\odot (U+T_1-U T_1)\right]W_1^T+{\color{blue}(G\odot T_1)}W_3^\top, (m,n),(n,k)
+\text{d}W_3&=x^\top{\color{blue}(G\odot T_1\sigma(T_1))}, \quad (k,m),(m,n)\\
+\text{d}W_1&= x^\top {\color{blue}\left[G\odot T_2\odot (T_1+T_1\sigma(T_1)-T_1^2\sigma(T_1))\right]}, \quad (k,m),(m,n) \\
+\text{d}x&=\left[\color{blue}G\odot T_2\odot (T_1+T_1\sigma(T_1)-T_1^2\sigma(T_1))\right]W_1^T+{\color{blue}(G\odot T_1\sigma(T_1))}W_3^\top,\quad (m,n),(n,k)
 \end{align} 
 $$
 

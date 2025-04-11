@@ -14,7 +14,7 @@ torch.random.manual_seed(0)
 
 def generate_mask(batch_size, seq_len, image_size):
     visual_mask = torch.zeros((batch_size, seq_len), dtype=torch.bool, device='cuda')
-    mid = randint(a=image_size // 2 + 1, b=visual_mask.numel() - image_size // 2 - 1)
+    mid = randint(a=image_size // 2, b=visual_mask.numel() - image_size // 2)
     low = mid - image_size // 2
     high = mid + image_size // 2
     visual_mask[:, low:high] = True
@@ -127,6 +127,5 @@ if __name__ == "__main__":
             with nullcontext() if args.bwd else torch.no_grad():
                 profile_module(f"pytorch-{seq_len}", pytorch_module, inputs, args.bwd)
                 # profile_module(f"triton-{seq_len}", triton_module, inputs, args.bwd)
-
 
         print("="*10)
