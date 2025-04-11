@@ -1,8 +1,8 @@
 # Installation
 
 ```bash
-git clone https://github.com/wenhaoli-xmu/not-important
-cd not-important
+git clone https://github.com/wenhaoli-xmu/ffn_kernel
+cd ffn_kernel
 pip install .
 ```
 
@@ -131,13 +131,13 @@ class TritonFFN(nn.Module):
 
 # Implementing Details
 
-Forward prop formula:
+Forward prop formula of FFN:
 
 $$
 C=T_1\odot T_2= (xW_1)\sigma(xW_1) \cdot xW_3
 $$
 
-Backward prop formula:
+Backward prop formula of FFN:
 
 $$
 \begin{align}
