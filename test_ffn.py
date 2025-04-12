@@ -3,7 +3,7 @@ import torch.nn as nn
 from profiler import WallTime
 from random import randint
 import random
-from ffn_kernel import ffn_bf16, ffn_fp32
+from ffn_kernel import MaskedFFN
 import IPython
 random.seed(0)
 torch.random.manual_seed(0)
@@ -48,7 +48,7 @@ class Torch(nn.Module):
 
 
 class Triton(nn.Module):
-    def __init__(self, hidden_size, intermediate_size, fp32_kernel=False):
+    def __init__(self, hidden_size, intermediate_size):
         super().__init__()
         self.w1 = nn.Linear(hidden_size, intermediate_size, bias=False)
         self.w2 = nn.Linear(intermediate_size, hidden_size, bias=False)
@@ -57,12 +57,10 @@ class Triton(nn.Module):
         self.u2 = nn.Linear(intermediate_size, hidden_size, bias=False)
         self.u3 = nn.Linear(hidden_size, intermediate_size, bias=False)
 
-        self.fp32_kernel = fp32_kernel
-
     @torch.no_grad()
     def forward(self, x, mask):
         batch_size = x.shape[0]
-        return (ffn_fp32 if self.fp32_kernel else ffn_bf16)(
+        return MaskedFFN.apply(
             x.flatten(0,1),
             self.w1.weight.data.T,
             self.w2.weight.data.T,
@@ -81,11 +79,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--bsz", type=int, default=1)
     parser.add_argument("--check", action='store_true')
-    parser.add_argument("--autotune", action='store_true')
-    parser.add_argument("--fp32", action='store_true')
     args = parser.parse_args()
-
-    assert ~(args.check & args.autotune)
 
     torch.cuda.set_device(0)
 
@@ -95,11 +89,8 @@ if __name__ == "__main__":
     image_size = 1024
 
     # create modules
-    pytorch_module = Torch(embed_dim, intermediate_dim).cuda()
-    triton_module = Triton(embed_dim, intermediate_dim, fp32_kernel=args.fp32).cuda()
-    if not args.fp32:
-        pytorch_module = pytorch_module.to(torch.bfloat16)
-        triton_module = triton_module.to(torch.bfloat16)
+    pytorch_module = Torch(embed_dim, intermediate_dim).cuda().bfloat16()
+    triton_module = Triton(embed_dim, intermediate_dim).cuda().bfloat16()
 
     # clone weights
     triton_module.w1.weight.data = pytorch_module.w1.weight.data.clone()
@@ -109,12 +100,8 @@ if __name__ == "__main__":
     triton_module.u2.weight.data = pytorch_module.u2.weight.data.clone()
     triton_module.u3.weight.data = pytorch_module.u3.weight.data.clone()
 
-    if args.autotune:
-        import os
-        os.environ['TRITON_PRINT_AUTOTUNING'] = "1"
-
     for seq_len in [2048 * i for i in range(1, 32)]:
-        x = torch.rand((batch_size, seq_len, embed_dim), dtype=torch.bfloat16 if not args.fp32 else torch.float32, device='cuda')
+        x = torch.rand((batch_size, seq_len, embed_dim), dtype=torch.bfloat16, device='cuda')
         mask = generate_mask(batch_size, seq_len, image_size)
         inputs = (x, mask)
 
@@ -125,8 +112,6 @@ if __name__ == "__main__":
             print(colorize('green', 'pytorch:'), outs1[0])
             print(colorize('green', 'triton:'), outs2[0])
             print(colorize('green', 'l2-norm distance: ') + f"{torch.dist(outs1[0], outs2[0])}")
-
-        if args.autotune or args.check:
             IPython.embed()
 
         print("="*10)

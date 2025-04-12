@@ -33,7 +33,8 @@ def profile_module(name, module, inputs, bwd=False, num_trials=10):
         with profile:
             out = module(*inputs)
             if bwd:
-                out.sum().backward()
+                out = out.sum()
+                out.backward()
     profile.result(detail=True)
     
 
@@ -126,6 +127,6 @@ if __name__ == "__main__":
             inputs = (x, mask)
             with nullcontext() if args.bwd else torch.no_grad():
                 profile_module(f"pytorch-{seq_len}", pytorch_module, inputs, args.bwd)
-                # profile_module(f"triton-{seq_len}", triton_module, inputs, args.bwd)
+                profile_module(f"triton-{seq_len}", triton_module, inputs, args.bwd)
 
         print("="*10)

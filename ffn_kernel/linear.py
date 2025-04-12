@@ -17,8 +17,8 @@ def _fused_bwd_kernel(
     g_ptr, a_ptr, b1_ptr, b2_ptr, da_ptr, db1_ptr, db2_ptr, mask_ptr,
     M, K, N,
     stride_gm, stride_gn,
-    stride_ak, stride_am,
-    stride_bn, stride_bk,
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
     stride_dam, stride_dak,
     stride_dbk, stride_dbn,
     DA_BLOCK_SIZE_M: tl.constexpr,
@@ -36,7 +36,8 @@ def _fused_bwd_kernel(
     Fused kernel for computing da and db simutanously.
     """
     pid = tl.program_id(axis=0)
-    if pid < M * K:
+    thresh = tl.cdiv(M, DA_BLOCK_SIZE_M) * tl.cdiv(K, DA_BLOCK_SIZE_K)
+    if pid < thresh:
         _masked_matmul_bwd_da(
             pid, 
             g_ptr,
@@ -46,14 +47,14 @@ def _fused_bwd_kernel(
             mask_ptr,
             M, N, K,
             stride_gm, stride_gn,
-            stride_bn, stride_bk,
+            stride_bk, stride_bn,
             stride_dam, stride_dak,
             DA_BLOCK_SIZE_M,
             DA_BLOCK_SIZE_N,
             DA_BLOCK_SIZE_K,
             DA_GROUP_SIZE)
     else:
-        pid -= M * K
+        pid -= thresh
         _masked_matmul_bwd_db(
             pid,
             g_ptr,
@@ -62,7 +63,7 @@ def _fused_bwd_kernel(
             db2_ptr,
             mask_ptr,
             M, N, K,
-            stride_ak, stride_am,
+            stride_am, stride_ak,
             stride_gm, stride_gn,
             stride_dbk, stride_dbn,
             DB_BLOCK_SIZE_M,
@@ -244,7 +245,7 @@ def _masked_matmul_bwd_da(
         g_ptr, b1_ptr, b2_ptr, da_ptr, mask_ptr,
         M, N, K,
         stride_gm, stride_gn,
-        stride_bn, stride_bk,
+        stride_bk, stride_bn,
         stride_dam, stride_dak,
         BLOCK_SIZE_M: tl.constexpr, 
         BLOCK_SIZE_N: tl.constexpr, 
@@ -272,45 +273,47 @@ def _masked_matmul_bwd_da(
     offs_gm = start_m + tl.arange(0, BLOCK_SIZE_M)
     offs_bk = start_k + tl.arange(0, BLOCK_SIZE_K)
     offs_mask = start_m + tl.arange(0, BLOCK_SIZE_M)
+    offs_n = tl.arange(0, BLOCK_SIZE_N)
     offs_gm = tl.where(offs_gm < M, offs_gm, 0)
     offs_bk = tl.where(offs_bk < K, offs_bk, 0)
 
     offs_gm = tl.max_contiguous(tl.multiple_of(offs_gm, BLOCK_SIZE_M), BLOCK_SIZE_M)
     offs_bk = tl.max_contiguous(tl.multiple_of(offs_bk, BLOCK_SIZE_K), BLOCK_SIZE_K)
-    offs_mask = tl.multiple_of(offs_mask, BLOCK_SIZE_M)
-    offs_n = tl.arange(0, BLOCK_SIZE_N)
+    offs_mask = tl.max_contiguous(tl.multiple_of(offs_mask, BLOCK_SIZE_M), BLOCK_SIZE_M)
+    offs_n = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N)
+
     g_ptrs = g_ptr + (offs_gm[:, None] * stride_gm + offs_n[None, :] * stride_gn)
-    b1_ptrs = b1_ptr + (offs_n[:, None] * stride_bn + offs_bk[None, :] * stride_bk)
-    b2_ptrs = b2_ptr + (offs_n[:, None] * stride_bn + offs_bk[None, :] * stride_bk)
+    b1_ptrs = b1_ptr + (offs_bk[:, None] * stride_bk + offs_n[None, :] * stride_bn)
+    b2_ptrs = b2_ptr + (offs_bk[:, None] * stride_bk + offs_n[None, :] * stride_bn)
     mask_ptrs = mask_ptr + offs_mask
 
     mask_mask = offs_mask < M
     mask_val = tl.load(mask_ptrs, mask=mask_mask, other=0).to(tl.int1)
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_K), dtype=tl.float32)
+
     for n in range(0, tl.cdiv(N, BLOCK_SIZE_N)):
 
-        mask_g = offs_n[None, :] < N - n * BLOCK_SIZE_N
-        mask_b = offs_n[:, None] < N - n * BLOCK_SIZE_N
+        mask = offs_n[None, :] < N - n * BLOCK_SIZE_N
         
         if tl.min(mask_val) == 1:
-            g = tl.load(g_ptrs, mask=mask_g, other=0.0)
-            b = tl.load(b1_ptrs, mask=mask_b, other=0.0)
-            accumulator = tl.dot(g, b, accumulator)
+            g = tl.load(g_ptrs, mask=mask, other=0.0)
+            b = tl.load(b1_ptrs, mask=mask, other=0.0)
+            accumulator = tl.dot(g, b.T, accumulator)
         
         elif tl.max(mask_val) == 0:
-            g = tl.load(g_ptrs, mask=mask_g, other=0.0)
-            b = tl.load(b2_ptrs, mask=mask_b, other=0.0)
-            accumulator = tl.dot(g, b, accumulator)
+            g = tl.load(g_ptrs, mask=mask, other=0.0)
+            b = tl.load(b2_ptrs, mask=mask, other=0.0)
+            accumulator = tl.dot(g, b.T, accumulator)
 
         else:
-            g = tl.load(g_ptrs, mask=mask_g, other=0.0)
-            b1 = tl.load(b1_ptrs, mask=mask_b, other=0.0)
-            b2 = tl.load(b2_ptrs, mask=mask_b, other=0.0)
+            g = tl.load(g_ptrs, mask=mask, other=0.0)
+            b1 = tl.load(b1_ptrs, mask=mask, other=0.0)
+            b2 = tl.load(b2_ptrs, mask=mask, other=0.0)
             accumulator += tl.where(
                 mask_val[:, None], 
-                tl.dot(g, b1), 
-                tl.dot(g, b2))
+                tl.dot(g, b1.T), 
+                tl.dot(g, b2.T))
         
         g_ptrs += BLOCK_SIZE_N * stride_gn
         b1_ptrs += BLOCK_SIZE_N * stride_bn
@@ -326,9 +329,13 @@ def _masked_matmul_bwd_da(
 @triton.jit
 def _masked_matmul_bwd_db(
         thread_idx,
-        g_ptr, a_ptr, db1_ptr, db2_ptr, mask_ptr,
+        g_ptr, 
+        a_ptr, 
+        db1_ptr, 
+        db2_ptr, 
+        mask_ptr,
         M, N, K,
-        stride_ak, stride_am,
+        stride_am, stride_ak,
         stride_gm, stride_gn,
         stride_dbk, stride_dbn,
         BLOCK_SIZE_M: tl.constexpr, 
@@ -346,7 +353,7 @@ def _masked_matmul_bwd_db(
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     num_pid_in_group = GROUP_SIZE_K * num_pid_n
     group_id = pid // num_pid_in_group
-    
+
     first_pid_k = group_id * GROUP_SIZE_K
     group_size_k = min(num_pid_k - first_pid_k, GROUP_SIZE_K)
     pid_k = first_pid_k + (pid % group_size_k)
@@ -365,8 +372,8 @@ def _masked_matmul_bwd_db(
     offs_gn = tl.max_contiguous(tl.multiple_of(offs_gn, BLOCK_SIZE_N), BLOCK_SIZE_N)
     offs_m = tl.arange(0, BLOCK_SIZE_M)
 
-    a_ptrs = a_ptr + (offs_ak[:, None] * stride_ak + offs_m[None, :] * stride_am)
-    g_ptrs = g_ptr + (offs_m[:, None] * stride_gm + offs_gn[None, :] * stride_gn)
+    a_ptrs = a_ptr + offs_m[:, None] * stride_am + offs_ak[None, :] * stride_ak
+    g_ptrs = g_ptr + offs_m[:, None] * stride_gm + offs_gn[None, :] * stride_gn
     mask_ptrs = mask_ptr + offs_m
 
     accum_db1 = tl.zeros((BLOCK_SIZE_K, BLOCK_SIZE_N), dtype=tl.float32)
@@ -374,24 +381,24 @@ def _masked_matmul_bwd_db(
 
     for m in range(0, tl.cdiv(M, BLOCK_SIZE_M)):
 
-        mask_a = offs_m[None, :] < M - m * BLOCK_SIZE_M
-        mask_g = offs_m[:, None] < M - m * BLOCK_SIZE_M
+        mask = offs_m[:, None] < M - m * BLOCK_SIZE_M
 
         mask_mask = offs_m < M - m * BLOCK_SIZE_M
         mask_val = tl.load(mask_ptrs, mask=mask_mask).to(tl.int1)
 
-        a = tl.load(a_ptrs, mask=mask_a, other=0.0)
-        g = tl.load(g_ptrs, mask=mask_g, other=0.0) 
+        a = tl.load(a_ptrs, mask=mask, other=0.0)
+        g = tl.load(g_ptrs, mask=mask, other=0.0) 
 
         if tl.min(mask_val) == 1:
-            accum_db1 = tl.dot(a, g, accum_db1)
+            accum_db1 = tl.dot(a.T, g, accum_db1)
 
         elif tl.max(mask_val) == 0:
-            accum_db2 = tl.dot(a, g, accum_db2)
+            accum_db2 = tl.dot(a.T, g, accum_db2)
 
         else:
-            a1 = tl.where(mask_val[None, :], a, 0.0)
-            a2 = tl.where(~mask_val[None, :], a, 0.0)
+            a_trans = a.T
+            a1 = tl.where(mask_val[None, :], a_trans, 0.0)
+            a2 = tl.where(~mask_val[None, :], a_trans, 0.0)
             accum_db1 = tl.dot(a1, g, accum_db1)
             accum_db2 = tl.dot(a2, g, accum_db2)
         
@@ -420,6 +427,7 @@ def _bf16_linear_forward(a, b1, b2, mask):
     
     cfg = find_spec(fwd_config, M // 1024)
     blk_m, blk_n, blk_k, group_m, num_warps, num_stages = cfg
+    a = a.contiguous()
 
     grid = (
         triton.cdiv(M, blk_m) *
@@ -452,21 +460,20 @@ def _bf16_linear_backward(gd, a, b1, b2, mask):
     """
     M, K = a.shape
     _, N = b1.shape
-
+    
+    gd = gd.contiguous()
     cfg = find_spec(bwd_config, M // 1024)
     da_m, da_k, da_n, db_m, db_k, db_n, da_group, db_group, num_warps, num_stages = cfg
 
     grid = (
         triton.cdiv(M, da_m) *
-        triton.cdiv(K, da_k) +
+        triton.cdiv(K, da_k) + 
         triton.cdiv(K, db_k) * 
-        triton.cdiv(N, db_n)
+        triton.cdiv(N, db_n),
     )
 
     da, db1, db2 = torch.empty_like(a), torch.empty_like(b1), torch.empty_like(b2)
-    a = a.t().contiguous()
-    b1 = b1.t().contiguous()
-    b2 = b2.t().contiguous()
+
 
     _fused_bwd_kernel[grid](
         gd, a, b1, b2, da, db1, db2, mask,

@@ -21,9 +21,6 @@ def _bf16_linear_backward(gd, a, b1, b2, mask, da_m, da_k, da_n, db_m, db_k, db_
     )
 
     da, db1, db2 = torch.empty_like(a), torch.empty_like(b1), torch.empty_like(b2)
-    a = a.t().contiguous()
-    b1 = b1.t().contiguous()
-    b2 = b2.t().contiguous()
 
     _fused_bwd_kernel[grid](
         gd, a, b1, b2, da, db1, db2, mask,
@@ -65,8 +62,8 @@ class Search(BaseSearch):
             "db_m": [16,32,64,128],
             "db_k": [16,32,64,128],
             "db_n": [16,32,64,128],
-            "da_group": [2,4,8],
-            "db_group": [2,4,8],
+            "da_group": [8,16],
+            "db_group": [8,16],
             "num_warps": [4],
             "num_stages": [4]
         }
