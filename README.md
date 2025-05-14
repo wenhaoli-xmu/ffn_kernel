@@ -1,5 +1,7 @@
 # Installation
 
+We use `torch==2.1.0+cu121` and `triton==3.2.0` as our experimental environment. 
+
 ```bash
 git clone https://github.com/wenhaoli-xmu/ffn_kernel
 cd ffn_kernel

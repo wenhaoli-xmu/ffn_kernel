@@ -474,7 +474,6 @@ def _bf16_linear_backward(gd, a, b1, b2, mask):
 
     da, db1, db2 = torch.empty_like(a), torch.empty_like(b1), torch.empty_like(b2)
 
-
     _fused_bwd_kernel[grid](
         gd, a, b1, b2, da, db1, db2, mask,
         M, N, K,
